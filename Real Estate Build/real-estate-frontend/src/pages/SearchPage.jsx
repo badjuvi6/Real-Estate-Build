@@ -1,39 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { LayoutGrid, Map as MapIcon, Columns2 } from 'lucide-react';
 import Navbar from '../components/Navbar.jsx';
 import HorizontalFilter, { DEFAULT_FILTERS } from '../components/HorizontalFilter.jsx';
 import PropertyList from '../components/PropertyList.jsx';
 import MapView from '../components/MapView.jsx';
 import { fetchProperties } from '../api/properties.js';
-
-// Turns "Any" / "1+" / "2+" ... into a numeric minimum, or null for "Any".
-function minFromChoice(choice) {
-  if (!choice || choice === 'Any') return null;
-  return parseInt(choice, 10);
-}
-
-/**
- * Client-side filtering, mirroring what the old vanilla-JS app already did
- * in applySearchAndFilters(). Bedrooms/bathrooms/propertyType only narrow
- * results for properties that actually have that field set.
- */
-function applyFilters(properties, filters) {
-  const location = filters.location.trim().toLowerCase();
-  const minPrice = filters.minPrice !== '' ? Number(filters.minPrice) : null;
-  const maxPrice = filters.maxPrice !== '' ? Number(filters.maxPrice) : null;
-  const minBeds = minFromChoice(filters.bedrooms);
-  const minBaths = minFromChoice(filters.bathrooms);
-
-  return properties.filter((p) => {
-    if (location && !`${p.address ?? ''}`.toLowerCase().includes(location)) return false;
-    if (filters.propertyType && p.propertyType && p.propertyType !== filters.propertyType) return false;
-    if (minPrice !== null && Number(p.price) < minPrice) return false;
-    if (maxPrice !== null && Number(p.price) > maxPrice) return false;
-    if (minBeds !== null && p.bedrooms != null && p.bedrooms < minBeds) return false;
-    if (minBaths !== null && p.bathrooms != null && p.bathrooms < minBaths) return false;
-    return true;
-  });
-}
+import { useDebouncedCallback } from '../hooks/useDebouncedCallback.js';
 
 const VIEW_MODES = [
   { id: 'grid', label: 'Grid', Icon: LayoutGrid },
@@ -64,18 +36,64 @@ function ViewModeToggle({ value, onChange }) {
 }
 
 export default function SearchPage() {
-  const [allProperties, setAllProperties] = useState([]);
+  const [properties, setProperties] = useState([]);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [geoCenter, setGeoCenter] = useState(null); // { lat, lng } | null - set via "Search near me"
+  const [geoStatus, setGeoStatus] = useState('idle'); // 'idle' | 'locating' | 'error'
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'map' | 'split'
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Filtering now happens server-side (GET /api/properties?...), so every
+  // change to `filters` or `geoCenter` re-fetches. HorizontalFilter pushes
+  // changes here live as the user types/clicks - see onDraftChange below -
+  // so this is debounced to avoid firing a request per keystroke/slider
+  // tick; onApply/onReset bypass the debounce for an instant response.
+  const debouncedSetFilters = useDebouncedCallback(setFilters, 400);
+
+  const handleApplyFilters = useCallback(
+    (next) => {
+      debouncedSetFilters.cancel();
+      setFilters(next);
+    },
+    [debouncedSetFilters]
+  );
+
+  const handleResetFilters = useCallback(() => {
+    debouncedSetFilters.cancel();
+    setFilters(DEFAULT_FILTERS);
+    setGeoCenter(null);
+    setGeoStatus('idle');
+  }, [debouncedSetFilters]);
+
+  const handleUseMyLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setGeoStatus('error');
+      return;
+    }
+    setGeoStatus('locating');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setGeoCenter({ lat: position.coords.latitude, lng: position.coords.longitude });
+        setGeoStatus('idle');
+      },
+      () => setGeoStatus('error'),
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 5 * 60 * 1000 }
+    );
+  }, []);
+
+  const handleClearGeoCenter = useCallback(() => {
+    setGeoCenter(null);
+    setGeoStatus('idle');
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
-    fetchProperties()
+    setError('');
+    fetchProperties(filters, geoCenter)
       .then((data) => {
-        if (!cancelled) setAllProperties(data);
+        if (!cancelled) setProperties(data);
       })
       .catch((err) => {
         if (!cancelled) setError(err.message || 'Failed to load properties.');
@@ -86,33 +104,42 @@ export default function SearchPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const visibleProperties = useMemo(
-    () => applyFilters(allProperties, filters),
-    [allProperties, filters]
-  );
+  }, [filters, geoCenter]);
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
       <Navbar />
-      <HorizontalFilter filters={filters} onApply={setFilters} onReset={() => setFilters(DEFAULT_FILTERS)} />
+      <HorizontalFilter
+        filters={filters}
+        onApply={handleApplyFilters}
+        onReset={handleResetFilters}
+        onDraftChange={debouncedSetFilters}
+        geoCenter={geoCenter}
+        geoStatus={geoStatus}
+        onUseMyLocation={handleUseMyLocation}
+        onClearGeoCenter={handleClearGeoCenter}
+      />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-lg font-semibold text-slate-900">
-            {isLoading ? 'Loading properties…' : `${visibleProperties.length} properties found`}
+            {isLoading ? 'Loading properties…' : `${properties.length} properties found`}
           </h1>
           <ViewModeToggle value={viewMode} onChange={setViewMode} />
         </div>
 
         {viewMode === 'grid' && (
-          <PropertyList properties={visibleProperties} isLoading={isLoading} error={error} />
+          <PropertyList
+            properties={properties}
+            isLoading={isLoading}
+            error={error}
+            onResetFilters={handleResetFilters}
+          />
         )}
 
         {viewMode === 'map' && (
           <div className="h-[70vh] min-h-[420px] w-full overflow-hidden rounded-xl border border-slate-200">
-            <MapView properties={visibleProperties} />
+            <MapView properties={properties} />
           </div>
         )}
 
@@ -121,10 +148,16 @@ export default function SearchPage() {
           // lg+: side by side, list scrolls internally, map stays pinned.
           <div className="flex flex-col gap-4 lg:h-[75vh] lg:min-h-[480px] lg:flex-row">
             <div className="lg:min-h-0 lg:w-1/2 lg:overflow-y-auto lg:pr-1">
-              <PropertyList properties={visibleProperties} isLoading={isLoading} error={error} compact />
+              <PropertyList
+                properties={properties}
+                isLoading={isLoading}
+                error={error}
+                compact
+                onResetFilters={handleResetFilters}
+              />
             </div>
             <div className="h-72 shrink-0 overflow-hidden rounded-xl border border-slate-200 lg:h-auto lg:w-1/2">
-              <MapView properties={visibleProperties} />
+              <MapView properties={properties} />
             </div>
           </div>
         )}

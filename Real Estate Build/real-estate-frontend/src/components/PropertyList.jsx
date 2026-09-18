@@ -1,3 +1,4 @@
+import { RotateCcw } from 'lucide-react';
 import PropertyCard from './PropertyCard.jsx';
 
 /**
@@ -9,8 +10,12 @@ import PropertyCard from './PropertyCard.jsx';
  * in split view, where this component only occupies half the page width -
  * without it, the normal `sm:grid-cols-2 xl:grid-cols-3` breakpoints key
  * off the full viewport and would cram multiple columns into a narrow pane.
+ *
+ * `onResetFilters` powers the "Reset Filters" button shown when a search
+ * legitimately returns zero results - optional so this component doesn't
+ * hard-require a reset handler to render.
  */
-export default function PropertyList({ properties, isLoading, error, compact = false }) {
+export default function PropertyList({ properties, isLoading, error, compact = false, onResetFilters }) {
   const gridClass = compact
     ? 'grid grid-cols-1 gap-4'
     : 'grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3';
@@ -36,8 +41,18 @@ export default function PropertyList({ properties, isLoading, error, compact = f
   if (properties.length === 0) {
     return (
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-10 text-center">
-        <p className="text-sm font-medium text-slate-600">No properties match your filters.</p>
-        <p className="mt-1 text-xs text-slate-400">Try widening your price range or search radius.</p>
+        <p className="text-sm font-medium text-slate-600">No properties found matching your criteria.</p>
+        <p className="mt-1 text-xs text-slate-400">Try widening your price range, search radius, or other filters.</p>
+        {onResetFilters && (
+          <button
+            type="button"
+            onClick={onResetFilters}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          >
+            <RotateCcw className="h-4 w-4" />
+            Reset Filters
+          </button>
+        )}
       </div>
     );
   }

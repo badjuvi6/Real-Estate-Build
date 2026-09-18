@@ -41,21 +41,49 @@ function parseJSONField(value, fallback) {
     }
 }
 
+// Escapes regex special characters in free-text user input before it's
+// used to build a RegExp. Without this, a search containing e.g. "(" or "*"
+// would throw (or worse, behave unexpectedly) instead of being matched
+// literally.
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // --- Shared query-filter builder ---
-// Used by both GET / and GET /radius so the two endpoints stay in sync
-// instead of maintaining two copies of the same validation logic.
+// Used by GET / and GET /radius so the two endpoints stay in sync instead
+// of maintaining separate copies of the same validation logic.
 //
 // Supported query params:
+//   search - case-insensitive partial match against title/description/address
 //   propertyType - must match one of Property.PROPERTY_TYPES
 //   minPrice / maxPrice - inclusive price bounds
 //   bedrooms / bathrooms - treated as a MINIMUM (e.g. bedrooms=3 -> "3+"),
 //     matching the frontend's "Any / 1+ / 2+ / 3+ / 4+" selector buttons
+//   lat / lng / radius - OPTIONAL geo filter (radius in km). All three or
+//     none - a partial pair (e.g. lat without lng) is treated as a mistake
+//     rather than silently ignored. GET /radius requires these three and
+//     validates that requirement itself before calling this function; here
+//     they're optional so GET / can combine a geo filter with every other
+//     filter above in one request.
 //
 // Returns { filter } on success or { error } (a string ready for a 400
 // response) if a param fails validation.
 function buildFilterFromQuery(query) {
-    const { propertyType, minPrice, maxPrice, bedrooms, bathrooms } = query;
+    const { search, propertyType, minPrice, maxPrice, bedrooms, bathrooms, lat, lng, radius } = query;
     const filter = {};
+
+    if (search !== undefined && search.trim() !== '') {
+        // Regex rather than a MongoDB $text index deliberately: $text does
+        // whole-word/stemmed matching, so searching "mia" would NOT match
+        // "Miami" - a poor fit for an as-you-type search box. The trade-off
+        // is that an unanchored regex can't use an index (full collection
+        // scan). Fine at this dataset's size; if the collection grows large
+        // enough for that to matter, this is the line to revisit - either a
+        // $text index (worse partial-match UX, better performance) or an
+        // external search service (Atlas Search, Algolia, etc.).
+        const pattern = new RegExp(escapeRegex(search.trim()), 'i');
+        filter.$or = [{ title: pattern }, { description: pattern }, { address: pattern }];
+    }
 
     if (propertyType !== undefined) {
         if (!Property.PROPERTY_TYPES.includes(propertyType)) {
@@ -101,13 +129,48 @@ function buildFilterFromQuery(query) {
         filter.bathrooms = { $gte: minBaths };
     }
 
+    const geoParamsGiven = [lat, lng, radius].filter((v) => v !== undefined).length;
+    if (geoParamsGiven > 0) {
+        if (geoParamsGiven < 3) {
+            return { error: 'lat, lng, and radius must all be provided together for a geo search' };
+        }
+
+        const latitude = Number(lat);
+        const longitude = Number(lng);
+        const radiusKm = Number(radius);
+
+        if (Number.isNaN(latitude) || latitude < -90 || latitude > 90) {
+            return { error: 'lat must be a number between -90 and 90' };
+        }
+        if (Number.isNaN(longitude) || longitude < -180 || longitude > 180) {
+            return { error: 'lng must be a number between -180 and 180' };
+        }
+        if (Number.isNaN(radiusKm) || radiusKm <= 0) {
+            return { error: 'radius must be a positive number of kilometers' };
+        }
+
+        // $centerSphere expects the radius in radians, not km/miles, hence
+        // the division by Earth's approximate radius (in the same unit).
+        const EARTH_RADIUS_KM = 6378.1;
+        const radiusInRadians = radiusKm / EARTH_RADIUS_KM;
+
+        filter.location = {
+            $geoWithin: {
+                // $centerSphere takes [[lng, lat], radiusInRadians] - same
+                // GeoJSON [lng, lat] order as everywhere else in this file.
+                $centerSphere: [[longitude, latitude], radiusInRadians]
+            }
+        };
+    }
+
     return { filter };
 }
 
 // --- API Endpoints for Property Management (CRUD Operations) ---
 
 // 1. GET all properties, optionally filtered: /api/properties
-//    /api/properties?propertyType=House&minPrice=200000&maxPrice=600000&bedrooms=3&bathrooms=2
+//    /api/properties?search=miami&propertyType=House&minPrice=200000&maxPrice=600000&bedrooms=3&bathrooms=2
+//    /api/properties?lat=25.76&lng=-80.19&radius=25   <- combinable with any of the above too
 router.get('/', async (req, res) => {
     try {
         const { filter, error } = buildFilterFromQuery(req.query);
@@ -126,8 +189,16 @@ router.get('/', async (req, res) => {
 
 // 2. GET properties within a radius: /api/properties/radius
 //    /api/properties/radius?lat=25.76&lng=-80.19&radius=25 (radius in km)
-//    Accepts the same optional propertyType/minPrice/maxPrice/bedrooms/bathrooms
-//    params as GET / above, combined with the geo bound.
+//    Accepts the same optional search/propertyType/minPrice/maxPrice/
+//    bedrooms/bathrooms params as GET / above, combined with the geo bound.
+//
+//    As of the search/geo update above, GET / can do everything this route
+//    does (just pass lat/lng/radius to it directly) - this route is kept
+//    for backward compatibility with anything already calling it, and is
+//    now a thin wrapper: it only adds the "lat/lng/radius are REQUIRED
+//    here" check, then delegates the actual filter-building (including the
+//    $geoWithin clause) to the same buildFilterFromQuery used everywhere
+//    else, rather than keeping a second copy of that math.
 //
 //    IMPORTANT: this route MUST be declared before GET /:id below - Express
 //    matches routes top-to-bottom, and /:id would otherwise swallow this
@@ -135,42 +206,14 @@ router.get('/', async (req, res) => {
 router.get('/radius', async (req, res) => {
     try {
         const { lat, lng, radius } = req.query;
-
         if (lat === undefined || lng === undefined || radius === undefined) {
             return res.status(400).json({ message: 'lat, lng, and radius (in km) query parameters are all required' });
-        }
-
-        const latitude = Number(lat);
-        const longitude = Number(lng);
-        const radiusKm = Number(radius);
-
-        if (Number.isNaN(latitude) || latitude < -90 || latitude > 90) {
-            return res.status(400).json({ message: 'lat must be a number between -90 and 90' });
-        }
-        if (Number.isNaN(longitude) || longitude < -180 || longitude > 180) {
-            return res.status(400).json({ message: 'lng must be a number between -180 and 180' });
-        }
-        if (Number.isNaN(radiusKm) || radiusKm <= 0) {
-            return res.status(400).json({ message: 'radius must be a positive number of kilometers' });
         }
 
         const { filter, error } = buildFilterFromQuery(req.query);
         if (error) {
             return res.status(400).json({ message: error });
         }
-
-        // $centerSphere expects the radius in radians, not km/miles, hence
-        // the division by Earth's approximate radius (in the same unit).
-        const EARTH_RADIUS_KM = 6378.1;
-        const radiusInRadians = radiusKm / EARTH_RADIUS_KM;
-
-        filter.location = {
-            $geoWithin: {
-                // $centerSphere takes [[lng, lat], radiusInRadians] - same
-                // GeoJSON [lng, lat] order as everywhere else in this file.
-                $centerSphere: [[longitude, latitude], radiusInRadians]
-            }
-        };
 
         const properties = await Property.find(filter).sort({ createdAt: -1 });
         res.json(properties);

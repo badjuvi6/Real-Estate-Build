@@ -13,3 +13,14 @@ export function formatPrice(price) {
   const n = Number(price);
   return Number.isFinite(n) ? `$${n.toLocaleString()}` : 'Price on request';
 }
+
+/**
+ * Converts a HorizontalFilter room-count choice ("Any" / "1+" / "2+" / ...)
+ * into a numeric minimum, or null for "Any". Shared between the API layer
+ * (building query params) and anywhere else that needs the same mapping,
+ * so the two can't drift apart.
+ */
+export function minFromChoice(choice) {
+  if (!choice || choice === 'Any') return null;
+  return parseInt(choice, 10);
+}

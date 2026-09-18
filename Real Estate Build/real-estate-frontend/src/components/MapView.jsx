@@ -1,6 +1,6 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { MapContainer, TileLayer, Marker, Popup, useMap, LayersControl } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents, LayersControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
@@ -72,12 +72,41 @@ function FitBoundsToMarkers({ markers }) {
   useEffect(() => {
     if (markers.length === 0) return;
     if (markers.length === 1) {
-      map.setView(markers[0].position, 13);
+      map.setView(markers[0].position, 13, { animate: false });
       return;
     }
     const bounds = L.latLngBounds(markers.map((m) => m.position));
-    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    // animate: false avoids a race with BoundsTracker below: an animated
+    // fitBounds only fires its "moveend" (which is what updates the bounds
+    // used for marker filtering) once the animation finishes, so an
+    // instant fit here means the very first render already has correct
+    // bounds instead of briefly showing zero/wrong markers mid-animation.
+    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14, animate: false });
   }, [map, markers]);
+
+  return null;
+}
+
+/**
+ * Reports the map's current visible bounds to the parent, updated on pan
+ * ("moveend") and zoom ("zoomend") - the standard Leaflet events for "the
+ * user finished changing what's in view" (as opposed to firing continuously
+ * mid-drag, which would be wasteful here since we're just re-filtering an
+ * already-fetched in-memory list, not making a new network request).
+ */
+function BoundsTracker({ onBoundsChange }) {
+  const map = useMapEvents({
+    moveend: () => onBoundsChange(map.getBounds()),
+    zoomend: () => onBoundsChange(map.getBounds()),
+  });
+
+  // Report the initial bounds once, so markers outside the starting view
+  // are correctly excluded from the very first render rather than only
+  // after the first pan/zoom.
+  useEffect(() => {
+    onBoundsChange(map.getBounds());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map]);
 
   return null;
 }
@@ -86,8 +115,12 @@ function FitBoundsToMarkers({ markers }) {
  * Reusable Leaflet map: one marker + popup per property with valid GeoJSON
  * coordinates, plus a Standard/Satellite base-layer switcher (top-right).
  * Properties without coordinates are skipped rather than plotted at [0, 0]
- * or crashing the map - see the note badge below the map when that
- * happens, so it's not a silent, confusing gap in the pin count.
+ * or crashing the map. Markers are also dynamically narrowed to whatever's
+ * currently in view as the user pans/zooms (see BoundsTracker) - this is a
+ * client-side re-filter of the already-fetched `properties`, not a new
+ * network request, so it's instant. Either kind of "missing" pin (no
+ * coordinates, or just outside the current view) is called out in the
+ * status badge below the map so results don't just silently look sparse.
  *
  * Props:
  *  - properties: array of property documents (same shape the API returns)
@@ -98,7 +131,18 @@ function FitBoundsToMarkers({ markers }) {
  */
 export default function MapView({ properties = [], linkToDetails = true }) {
   const markers = useMemo(() => toMarkers(properties), [properties]);
+  const [bounds, setBounds] = useState(null);
+
+  // Only render pins actually within the current viewport. `bounds` starts
+  // null until the map reports its first extent (see BoundsTracker), so
+  // everything shows briefly on first paint rather than nothing.
+  const markersInView = useMemo(() => {
+    if (!bounds) return markers;
+    return markers.filter((m) => bounds.contains(m.position));
+  }, [markers, bounds]);
+
   const skippedCount = properties.length - markers.length;
+  const outOfViewCount = markers.length - markersInView.length;
 
   return (
     <div className="relative h-full w-full">
@@ -151,8 +195,9 @@ export default function MapView({ properties = [], linkToDetails = true }) {
         </LayersControl>
 
         <FitBoundsToMarkers markers={markers} />
+        <BoundsTracker onBoundsChange={setBounds} />
 
-        {markers.map(({ id, property, position }) => (
+        {markersInView.map(({ id, property, position }) => (
           <Marker key={id} position={position}>
             <Popup minWidth={180} maxWidth={220}>
               <img
@@ -176,9 +221,14 @@ export default function MapView({ properties = [], linkToDetails = true }) {
         ))}
       </MapContainer>
 
-      {skippedCount > 0 && (
+      {(skippedCount > 0 || outOfViewCount > 0) && (
         <div className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">
-          {skippedCount} {skippedCount === 1 ? 'property is' : 'properties are'} missing map coordinates
+          {[
+            skippedCount > 0 && `${skippedCount} ${skippedCount === 1 ? 'property is' : 'properties are'} missing map coordinates`,
+            outOfViewCount > 0 && `${outOfViewCount} more outside current view`,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </div>
       )}
     </div>

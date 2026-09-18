@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RotateCcw, Search, SlidersHorizontal, X } from 'lucide-react';
+import { RotateCcw, Search, SlidersHorizontal, X, LocateFixed } from 'lucide-react';
 
 export const PROPERTY_TYPES = ['House', 'Apartment', 'Condo', 'Townhouse', 'Land'];
 const ROOM_CHOICES = ['Any', '1+', '2+', '3+', '4+'];
@@ -57,7 +57,7 @@ function RoomSelector({ label, value, onChange }) {
  * flex-wrap) and once inside the mobile drawer (stacked, full width) so
  * both surfaces share one source of truth for the fields themselves.
  */
-function FilterFields({ draft, patch, stacked }) {
+function FilterFields({ draft, patch, stacked, geoCenter, geoStatus, onUseMyLocation, onClearGeoCenter }) {
   const fieldWidth = stacked ? 'w-full' : 'w-full sm:w-auto';
 
   return (
@@ -153,6 +153,42 @@ function FilterFields({ draft, patch, stacked }) {
           onChange={(e) => patch({ radius: Number(e.target.value) })}
           className="w-full accent-blue-600"
         />
+        {/*
+          The radius value above is inert on its own - a radius needs a
+          center point to search from, and there's no geocoding service
+          wired in to turn typed text like "Miami" into coordinates (that's
+          a real, separate integration - see the response notes). The
+          browser's own Geolocation API gives us a real, honest center
+          point without needing one, at the cost of only working for
+          "search near where I am right now" rather than an arbitrary typed
+          place.
+        */}
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={onUseMyLocation}
+            disabled={geoStatus === 'locating'}
+            className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <LocateFixed className="h-3.5 w-3.5" />
+            {geoStatus === 'locating' ? 'Locating…' : geoCenter ? 'Update my location' : 'Search near me'}
+          </button>
+          {geoCenter && (
+            <button
+              type="button"
+              onClick={onClearGeoCenter}
+              className="text-xs text-slate-400 hover:text-slate-600"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        {geoStatus === 'error' && (
+          <p className="mt-1 text-[11px] text-red-500">Couldn&apos;t get your location - check your browser&apos;s location permission.</p>
+        )}
+        {geoCenter && geoStatus !== 'error' && (
+          <p className="mt-1 text-[11px] text-slate-400">Radius search is active, centered on your location.</p>
+        )}
       </div>
     </div>
   );
@@ -162,17 +198,35 @@ function FilterFields({ draft, patch, stacked }) {
  * Horizontal search & filter bar.
  *
  * Controlled by the parent: `filters` is the currently *applied* filter
- * set (the thing actually driving the results), while edits are held in
- * local draft state until the user hits "Apply Filters" — matching the
- * requirement for an explicit Apply action rather than filtering on every
- * keystroke. "Reset" clears the draft and applies immediately.
+ * set. Every change is also pushed live to the parent via `onDraftChange`
+ * (the parent debounces this into an actual API call - see SearchPage),
+ * so filtering now happens automatically shortly after any change rather
+ * than requiring "Apply Filters" to be clicked. That button still exists
+ * for two reasons: it applies instantly (bypassing the debounce delay) for
+ * anyone who doesn't want to wait, and on mobile it's what closes the
+ * filter drawer. "Reset" clears the draft and applies immediately too.
  *
  * Props:
  *  - filters:  the committed filter object (see DEFAULT_FILTERS for shape)
  *  - onApply:  (filters) => void — called when the user applies the draft
  *  - onReset:  () => void — called when the user resets to defaults
+ *  - onDraftChange: (filters) => void — called on every single change,
+ *    live (not debounced here - the parent owns that)
+ *  - geoCenter: { lat, lng } | null — the active "search near me" point
+ *  - geoStatus: 'idle' | 'locating' | 'error' — Geolocation request status
+ *  - onUseMyLocation: () => void — called when "Search near me" is clicked
+ *  - onClearGeoCenter: () => void — called when "Clear" is clicked
  */
-export default function HorizontalFilter({ filters, onApply, onReset }) {
+export default function HorizontalFilter({
+  filters,
+  onApply,
+  onReset,
+  onDraftChange,
+  geoCenter,
+  geoStatus,
+  onUseMyLocation,
+  onClearGeoCenter,
+}) {
   const [draft, setDraft] = useState(filters);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -182,7 +236,13 @@ export default function HorizontalFilter({ filters, onApply, onReset }) {
     setDraft(filters);
   }, [filters]);
 
-  const patch = (changes) => setDraft((prev) => ({ ...prev, ...changes }));
+  const patch = (changes) => {
+    setDraft((prev) => {
+      const next = { ...prev, ...changes };
+      onDraftChange?.(next);
+      return next;
+    });
+  };
 
   const handleApply = () => {
     onApply(draft);
@@ -202,7 +262,15 @@ export default function HorizontalFilter({ filters, onApply, onReset }) {
       {/* Desktop / tablet: full horizontal bar */}
       <div className="hidden lg:block px-6 py-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
-          <FilterFields draft={draft} patch={patch} stacked={false} />
+          <FilterFields
+            draft={draft}
+            patch={patch}
+            stacked={false}
+            geoCenter={geoCenter}
+            geoStatus={geoStatus}
+            onUseMyLocation={onUseMyLocation}
+            onClearGeoCenter={onClearGeoCenter}
+          />
           <div className="flex items-center gap-2 pb-0.5">
             <button
               type="button"
@@ -283,7 +351,15 @@ export default function HorizontalFilter({ filters, onApply, onReset }) {
           </div>
 
           <div className="flex-1 overflow-y-auto px-5 py-5">
-            <FilterFields draft={draft} patch={patch} stacked />
+            <FilterFields
+              draft={draft}
+              patch={patch}
+              stacked
+              geoCenter={geoCenter}
+              geoStatus={geoStatus}
+              onUseMyLocation={onUseMyLocation}
+              onClearGeoCenter={onClearGeoCenter}
+            />
           </div>
 
           <div className="flex items-center gap-3 border-t border-slate-200 px-5 py-4">
