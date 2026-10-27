@@ -19,19 +19,28 @@
 
 **[Live Demo](https://realestatelisting.netlify.app/)** · **[API](https://real-estate-build-s4tc.onrender.com/api/properties)**
 
-[Features](#features) · [Tech Stack](#tech-stack) · [Getting Started](#project-setup--installation) · [API](#api-endpoints) · [Roadmap](#future-enhancements) · [Author](#author)
+[App Preview](#app-preview) · [Features](#features) · [Tech Stack](#tech-stack) · [Getting Started](#project-setup--installation) · [API](#api-endpoints) · [Roadmap](#future-enhancements) · [Author](#author)
 
 </div>
 
 <!--
-  TODO - add these once they exist:
-
-  Build status badge (needs a CI workflow, e.g. .github/workflows/ci.yml):
+  Build status badge:
   [![Build](https://github.com/badjuvi6/Real-Estate-Build/actions/workflows/ci.yml/badge.svg)](https://github.com/badjuvi6/Real-Estate-Build/actions)
-
-  Screenshots: save them in docs/screenshots/ and embed here, e.g.
-  ![Search page](docs/screenshots/search.png)
 -->
+
+---
+
+## App Preview
+
+<div align="center">
+  <img src="docs/screenshots/home.jpg" alt="Home Page Landing" width="800"/>
+  <br/><br/>
+  <img src="docs/screenshots/search.jpg" alt="Search and Live Property Filters" width="800"/>
+  <br/><br/>
+  <img src="docs/screenshots/property-details.jpg" alt="Property Details and Location Map" width="800"/>
+  <br/><br/>
+  <img src="docs/screenshots/dashboard.jpg" alt="User Dashboard and Saved Homes" width="800"/>
+</div>
 
 ---
 
@@ -319,7 +328,7 @@ The app is deployed as two independent services plus a managed database.
 * Build command: `npm run build`
 * Publish directory: `real-estate-frontend/dist`
 * Environment variable: `VITE_API_BASE_URL` set to your Render URL. It is read at build time, so redeploy after changing it.
-* Because the app uses client-side routing, add a file at `real-estate-frontend/public/_redirects` containing the line below. Without it, refreshing a page such as `/property/:id` returns a 404.
+* Because the app uses client-side routing, add a file at `real-estate-frontend/public/_redirects` containing:
 ```text
 /* /index.html 200
 
@@ -367,8 +376,6 @@ Distributed under the MIT License. See `LICENSE` for details.
 **Manu Winfred**
 
 * GitHub: [@badjuvi6](https://github.com/badjuvi6)
-* LinkedIn: [Manu Winfred](https://www.google.com/search?q=https://www.linkedin.com/in/manu-winfred-bb801b434)
+* LinkedIn: [Manu Winfred](https://www.linkedin.com/in/manu-winfred-bb801b434/)
 
 If you find this project useful or interesting, consider giving it a star.
-
-```
