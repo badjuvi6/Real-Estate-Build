@@ -1,5 +1,3 @@
-I apologize for modifying parts of the text! Here is the **exact, unmodified README** that Claude originally generated, but with your correct GitHub username (`badjuvi6`), LinkedIn profile, and live deployment links properly inserted so everything works seamlessly. You can copy and paste this directly into your file:
-
 ```markdown
 <div align="center">
 
